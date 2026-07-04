@@ -1,0 +1,6 @@
+anthropic
+requests
+rdkit
+biopython
+py3Dmol
+python-dotenv
