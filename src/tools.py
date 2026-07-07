@@ -1,5 +1,6 @@
 import requests
 import os
+import random
 from chembl_webresource_client.new_client import new_client
 from rdkit import Chem
 from rdkit.Chem import Descriptors
@@ -49,6 +50,7 @@ def get_structure(uniprot_accession: str, sequence: str) -> dict:
     path = _predict_structure_esmfold(sequence, uniprot_accession)
     return {"path": path, "source": "predicted (ESMFold)", "pdb_id": None}
 
+
 def _find_pdb_id(uniprot_accession: str) -> str | None:
     """Look for the first PDB cross-reference on the UniProt entry."""
     url = f"https://rest.uniprot.org/uniprotkb/{uniprot_accession}.json"
@@ -60,6 +62,7 @@ def _find_pdb_id(uniprot_accession: str) -> str | None:
             return xref["id"]
     return None
 
+
 def _download_pdb(pdb_id: str) -> str:
     url = f"https://files.rcsb.org/download/{pdb_id}.pdb"
     resp = requests.get(url, timeout=15)
@@ -68,6 +71,7 @@ def _download_pdb(pdb_id: str) -> str:
     with open(path, "w") as f:
         f.write(resp.text)
     return path
+
 
 def _predict_structure_esmfold(sequence: str, label: str) -> str:
     url = "https://api.esmatlas.com/foldSequence/v1/pdb/"
@@ -86,6 +90,7 @@ def get_known_ligands(uniprot_accession: str, max_results: int = 50) -> list[dic
     raw = _get_chembl_activities(chembl_target_id, max_results)
     return raw
 
+
 def _find_chembl_target(uniprot_accession: str) -> str | None:
     target_api = new_client.target
     target = target_api.filter(
@@ -100,6 +105,7 @@ def _find_chembl_target(uniprot_accession: str) -> str | None:
     target_chembl_id = target[0]['target_chembl_id']
 
     return target_chembl_id
+    
         
 def _get_chembl_activities(chembl_target_id: str, max_results: int) -> list[dict]:
     print("Fetching activities from server (this may take a moment)...")
@@ -163,40 +169,41 @@ def _get_chembl_activities(chembl_target_id: str, max_results: int) -> list[dict
     return ligands_list
 
 
-def load_candidate_library(exclude_chembl_ids: set[str] | None = None, max_candidates: int = 50) -> list[dict]:
+def load_candidate_library(
+    exclude_chembl_ids: set[str] | None = None,
+    max_candidates: int = 50,
+    random_seed: int = 42,
+) -> list[dict]:
     """Load a fixed, target-agnostic pool of approved small-molecule drugs.
 
-    Filters to Lipinski rule-of-five compliant molecules and excludes any
-    ChEMBL IDs already known to bind the current target (pass in the IDs
-    from get_known_ligands) to avoid circular rediscovery of known binders.
+    Randomly sampled (with a fixed seed for reproducibility) from all ChEMBL
+    max_phase=4 molecules, rather than taking the lowest ChEMBL IDs, so the
+    pool isn't dominated by whichever molecules happen to be numbered first.
     """
     exclude_chembl_ids = exclude_chembl_ids or set()
     molecule_api = new_client.molecule
-    approved = molecule_api.filter(
+    approved = list(molecule_api.filter(
         max_phase=4,
         molecule_structures__isnull=False,
-    ).only('molecule_chembl_id', 'pref_name', 'molecule_structures')[:500]  # raw pool to filter down from
+    ).only('molecule_chembl_id', 'pref_name', 'molecule_structures')[:1000])
+
+    random.Random(random_seed).shuffle(approved)  # avoid always drawing the same low-ID entries
 
     candidates = []
     for mol in approved:
         chembl_id = mol.get('molecule_chembl_id')
         if chembl_id in exclude_chembl_ids:
             continue
-
         structures = mol.get('molecule_structures')
         smiles = structures.get('canonical_smiles') if structures else None
         if not smiles or not _passes_lipinski(smiles):
             continue
-
-        candidates.append({
-            'chembl_id': chembl_id,
-            'name': mol.get('pref_name'),
-            'smiles': smiles,
-        })
+        candidates.append({'chembl_id': chembl_id, 'name': mol.get('pref_name'), 'smiles': smiles})
         if len(candidates) >= max_candidates:
             break
 
     return candidates
+
 
 def _passes_lipinski(smiles: str) -> bool:
     """Standard Lipinski rule of five, allowing at most one violation."""
@@ -239,6 +246,7 @@ def dock_candidates(receptor_path: str, candidates: list[dict]) -> list[dict]:
 
     results.sort(key=lambda r: r["affinity_kcal_mol"])
     return results
+
 
 def _prepare_receptor(receptor_path: str) -> str:
     """Strip waters/heteroatoms and convert to PDBQT. Cached per receptor file."""
