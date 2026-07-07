@@ -64,9 +64,93 @@ def _predict_structure_esmfold(sequence: str, label: str) -> str:
         f.write(resp.text)
     return path
 
+def get_known_ligands(uniprot_accession: str, max_results: int = 50) -> list[dict]:
+    chembl_target_id = _find_chembl_target(uniprot_accession)
+    if not chembl_target_id:
+        return []
+    raw = _get_chembl_activities(chembl_target_id, max_results)
+    return raw
+
+def _find_chembl_target(uniprot_accession: str) -> str | None:
+    target_api = new_client.target
+    target = target_api.filter(
+        target_components__accession=uniprot_accession,
+        target_type="SINGLE PROTEIN"
+        ).only('target_chembl_id')
+
+    if not target:
+        print(f"No ChEMBL target found for UniProt Accession: {uniprot_accession}")
+        return None
+    
+    target_chembl_id = target[0]['target_chembl_id']
+
+    return target_chembl_id
+        
+
+def _get_chembl_activities(chembl_target_id: str, max_results: int) -> list[dict]:
+    print("Fetching activities from server (this may take a moment)...")
+    activity_api = new_client.activity
+    activities = activity_api.filter(
+        target_chembl_id=chembl_target_id
+    ).only(
+        'molecule_chembl_id', 
+        'standard_type', 
+        'standard_value', 
+        'standard_units'
+    )[:max_results]
+    
+    raw_activities = list(activities)
+    print(f"Retrieved {len(raw_activities)} raw activity records.")
+    
+    valid_activities = []
+    molecule_ids = set()
+    
+    for act in raw_activities:
+        m_id = act.get('molecule_chembl_id')
+        val = act.get('standard_value')
+        
+        if m_id and val is not None:
+            valid_activities.append(act)
+            molecule_ids.add(m_id)
+            
+    print(f"Found {len(valid_activities)} activities with valid measurements across {len(molecule_ids)} unique molecules.")
+    
+    if not molecule_ids:
+        return []
+
+    molecule_api = new_client.molecule
+    molecule_list = list(molecule_ids)
+    smiles_lookup = {}
+    
+    batch_size = 100
+    for i in range(0, len(molecule_list), batch_size):
+        batch = molecule_list[i:i + batch_size]
+        mol_batch = molecule_api.filter(molecule_chembl_id__in=batch).only('molecule_chembl_id', 'molecule_structures')
+        for mol in mol_batch:
+            mol_id = mol.get('molecule_chembl_id')
+            structures = mol.get('molecule_structures')
+            if structures and 'canonical_smiles' in structures:
+                smiles_lookup[mol_id] = structures['canonical_smiles']
+
+    ligands_list = []
+    for act in valid_activities:
+        mol_id = act.get('molecule_chembl_id')
+        
+        if mol_id in smiles_lookup:
+            ligand_dict = {
+                'chembl_id': mol_id,
+                'smiles': smiles_lookup[mol_id],
+                'standard_type': act.get('standard_type'),
+                'standard_value': act.get('standard_value'),
+                'standard_units': act.get('standard_units')
+            }
+            ligands_list.append(ligand_dict)
+            
+    return ligands_list
+
 
 if __name__ == "__main__":
-    # Manual smoke test — DRD2 has a known PDB structure, so this should hit the experimental path
-    target = resolve_target("DRD2")
-    result = get_structure(target["accession"], target["sequence"])
-    print(result)
+    target = resolve_target("EGFR")
+    ligands = get_known_ligands(target["accession"])
+    print(f"Found {len(ligands)} known ligands")
+    print(ligands[0] if ligands else "none")
