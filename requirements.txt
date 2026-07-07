@@ -5,3 +5,4 @@ biopython
 py3Dmol
 python-dotenv
 chembl_webresource_client
+openbabel

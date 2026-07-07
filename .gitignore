@@ -5,3 +5,4 @@ __pycache__/
 data/*.pdb
 data/*.pdbqt
 .ipynb_checkpoints/
+tools/vina_1.2.7_win.exe

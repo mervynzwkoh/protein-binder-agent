@@ -3,8 +3,15 @@ import os
 from chembl_webresource_client.new_client import new_client
 from rdkit import Chem
 from rdkit.Chem import Descriptors
+import subprocess
+from pathlib import Path
+from rdkit import Chem
+from rdkit.Chem import AllChem
+from openbabel import pybel
 
 STRUCTURE_DIR = "data/structures"
+VINA_EXE = "tools/vina_1.2.7_win.exe"
+DOCKING_DIR = "data/docking"
 
 def resolve_target(name_or_id: str) -> dict:
     """Resolve a gene/protein name or UniProt ID to accession + sequence."""
@@ -25,6 +32,7 @@ def resolve_target(name_or_id: str) -> dict:
         "sequence": result["sequence"]["value"],
     }
 
+
 def get_structure(uniprot_accession: str, sequence: str) -> dict:
     """Resolve a 3D structure for a target.
 
@@ -41,7 +49,6 @@ def get_structure(uniprot_accession: str, sequence: str) -> dict:
     path = _predict_structure_esmfold(sequence, uniprot_accession)
     return {"path": path, "source": "predicted (ESMFold)", "pdb_id": None}
 
-
 def _find_pdb_id(uniprot_accession: str) -> str | None:
     """Look for the first PDB cross-reference on the UniProt entry."""
     url = f"https://rest.uniprot.org/uniprotkb/{uniprot_accession}.json"
@@ -53,7 +60,6 @@ def _find_pdb_id(uniprot_accession: str) -> str | None:
             return xref["id"]
     return None
 
-
 def _download_pdb(pdb_id: str) -> str:
     url = f"https://files.rcsb.org/download/{pdb_id}.pdb"
     resp = requests.get(url, timeout=15)
@@ -63,7 +69,6 @@ def _download_pdb(pdb_id: str) -> str:
         f.write(resp.text)
     return path
 
-
 def _predict_structure_esmfold(sequence: str, label: str) -> str:
     url = "https://api.esmatlas.com/foldSequence/v1/pdb/"
     resp = requests.post(url, data=sequence, timeout=60)
@@ -72,6 +77,7 @@ def _predict_structure_esmfold(sequence: str, label: str) -> str:
     with open(path, "w") as f:
         f.write(resp.text)
     return path
+
 
 def get_known_ligands(uniprot_accession: str, max_results: int = 50) -> list[dict]:
     chembl_target_id = _find_chembl_target(uniprot_accession)
@@ -95,7 +101,6 @@ def _find_chembl_target(uniprot_accession: str) -> str | None:
 
     return target_chembl_id
         
-
 def _get_chembl_activities(chembl_target_id: str, max_results: int) -> list[dict]:
     print("Fetching activities from server (this may take a moment)...")
     activity_api = new_client.activity
@@ -157,6 +162,7 @@ def _get_chembl_activities(chembl_target_id: str, max_results: int) -> list[dict
             
     return ligands_list
 
+
 def load_candidate_library(exclude_chembl_ids: set[str] | None = None, max_candidates: int = 50) -> list[dict]:
     """Load a fixed, target-agnostic pool of approved small-molecule drugs.
 
@@ -192,7 +198,6 @@ def load_candidate_library(exclude_chembl_ids: set[str] | None = None, max_candi
 
     return candidates
 
-
 def _passes_lipinski(smiles: str) -> bool:
     """Standard Lipinski rule of five, allowing at most one violation."""
     mol = Chem.MolFromSmiles(smiles)
@@ -207,11 +212,133 @@ def _passes_lipinski(smiles: str) -> bool:
     return violations <= 1
 
 
+def dock_candidates(receptor_path: str, candidates: list[dict]) -> list[dict]:
+    """Dock candidate molecules against a receptor structure.
+
+    Returns candidates annotated with binding affinity (kcal/mol, more negative
+    is better), sorted best-first. Candidates that fail to prepare or dock are
+    skipped, with the reason printed rather than silently dropped.
+    """
+    os.makedirs(DOCKING_DIR, exist_ok=True)
+    receptor_pdbqt = _prepare_receptor(receptor_path)
+    center, box_size = _define_search_box(receptor_path)
+
+    results = []
+    for candidate in candidates:
+        ligand_pdbqt = _prepare_ligand(candidate["smiles"], candidate["chembl_id"])
+        if ligand_pdbqt is None:
+            print(f"Skipping {candidate['chembl_id']}: failed to prepare ligand")
+            continue
+
+        affinity = _run_vina(receptor_pdbqt, ligand_pdbqt, center, box_size)
+        if affinity is None:
+            print(f"Skipping {candidate['chembl_id']}: docking failed")
+            continue
+
+        results.append({**candidate, "affinity_kcal_mol": affinity})
+
+    results.sort(key=lambda r: r["affinity_kcal_mol"])
+    return results
+
+def _prepare_receptor(receptor_path: str) -> str:
+    """Strip waters/heteroatoms and convert to PDBQT. Cached per receptor file."""
+    receptor_name = Path(receptor_path).stem
+    pdbqt_path = os.path.join(DOCKING_DIR, f"{receptor_name}_receptor.pdbqt")
+    if os.path.exists(pdbqt_path):
+        return pdbqt_path
+
+    cleaned_pdb = os.path.join(DOCKING_DIR, f"{receptor_name}_clean.pdb")
+    with open(receptor_path) as infile, open(cleaned_pdb, "w") as outfile:
+        for line in infile:
+            if line.startswith("ATOM"):
+                outfile.write(line)
+
+    mol = next(pybel.readfile("pdb", cleaned_pdb))
+    mol.addh()
+    mol.write("pdbqt", pdbqt_path, overwrite=True, opt={"r": None})  # rigid - no torsion tree
+    return pdbqt_path
+
+
+def _define_search_box(receptor_path: str) -> tuple[list[float], list[float]]:
+    """Center on a co-crystallized ligand if present, else fall back to blind docking."""
+    hetero_coords, protein_coords = [], []
+    with open(receptor_path) as f:
+        for line in f:
+            if line.startswith("HETATM") and line[17:20].strip() != "HOH":
+                hetero_coords.append(_parse_coords(line))
+            elif line.startswith("ATOM"):
+                protein_coords.append(_parse_coords(line))
+
+    if hetero_coords:
+        return _centroid(hetero_coords), [25.0, 25.0, 25.0]  # pocket-sized box
+
+    # Blind docking fallback - no known pocket to anchor on
+    span = _bounding_box_span(protein_coords)
+    return _centroid(protein_coords), [dim + 10.0 for dim in span]
+
+
+def _parse_coords(pdb_line: str) -> tuple[float, float, float]:
+    return (float(pdb_line[30:38]), float(pdb_line[38:46]), float(pdb_line[46:54]))
+
+
+def _centroid(coords: list[tuple[float, float, float]]) -> list[float]:
+    n = len(coords)
+    return [sum(c[i] for c in coords) / n for i in range(3)]
+
+
+def _bounding_box_span(coords: list[tuple[float, float, float]]) -> list[float]:
+    return [max(c[i] for c in coords) - min(c[i] for c in coords) for i in range(3)]
+
+
+def _prepare_ligand(smiles: str, label: str) -> str | None:
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    mol = Chem.AddHs(mol)
+    if AllChem.EmbedMolecule(mol, randomSeed=42) != 0:
+        return None  # RDKit couldn't generate a valid 3D conformer for this molecule
+    AllChem.MMFFOptimizeMolecule(mol)
+
+    sdf_path = os.path.join(DOCKING_DIR, f"{label}.sdf")
+    with Chem.SDWriter(sdf_path) as writer:
+        writer.write(mol)
+
+    pdbqt_path = os.path.join(DOCKING_DIR, f"{label}_ligand.pdbqt")
+    ob_mol = next(pybel.readfile("sdf", sdf_path))
+    ob_mol.write("pdbqt", pdbqt_path, overwrite=True)
+    return pdbqt_path
+
+
+def _run_vina(receptor_pdbqt: str, ligand_pdbqt: str, center: list[float], box_size: list[float]) -> float | None:
+    out_path = ligand_pdbqt.replace("_ligand.pdbqt", "_out.pdbqt")
+    cmd = [
+        VINA_EXE,
+        "--receptor", receptor_pdbqt,
+        "--ligand", ligand_pdbqt,
+        "--center_x", str(center[0]), "--center_y", str(center[1]), "--center_z", str(center[2]),
+        "--size_x", str(box_size[0]), "--size_y", str(box_size[1]), "--size_z", str(box_size[2]),
+        "--exhaustiveness", "8",
+        "--out", out_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        print(f"Vina failed: {result.stderr}")
+        return None
+
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if parts and parts[0] == "1":  # row "1" = best-scoring pose
+            return float(parts[1])
+    return None
+
+
 if __name__ == "__main__":
     target = resolve_target("EGFR")
+    structure = get_structure(target["accession"], target["sequence"])
     known = get_known_ligands(target["accession"])
-    known_ids = {ligand["chembl_id"] for ligand in known}
+    known_ids = {l["chembl_id"] for l in known}
+    candidates = load_candidate_library(exclude_chembl_ids=known_ids, max_candidates=5)  # small for a first test
 
-    candidates = load_candidate_library(exclude_chembl_ids=known_ids, max_candidates=20)
-    print(f"Loaded {len(candidates)} candidates (excluded {len(known_ids)} known EGFR ligands)")
-    print(candidates[0] if candidates else "none")
+    results = dock_candidates(structure["path"], candidates)
+    for r in results:
+        print(f"{r['chembl_id']}: {r['affinity_kcal_mol']} kcal/mol")
