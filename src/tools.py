@@ -1,6 +1,8 @@
 import requests
 import os
 from chembl_webresource_client.new_client import new_client
+from rdkit import Chem
+from rdkit.Chem import Descriptors
 
 STRUCTURE_DIR = "data/structures"
 
@@ -155,9 +157,61 @@ def _get_chembl_activities(chembl_target_id: str, max_results: int) -> list[dict
             
     return ligands_list
 
+def load_candidate_library(exclude_chembl_ids: set[str] | None = None, max_candidates: int = 50) -> list[dict]:
+    """Load a fixed, target-agnostic pool of approved small-molecule drugs.
+
+    Filters to Lipinski rule-of-five compliant molecules and excludes any
+    ChEMBL IDs already known to bind the current target (pass in the IDs
+    from get_known_ligands) to avoid circular rediscovery of known binders.
+    """
+    exclude_chembl_ids = exclude_chembl_ids or set()
+    molecule_api = new_client.molecule
+    approved = molecule_api.filter(
+        max_phase=4,
+        molecule_structures__isnull=False,
+    ).only('molecule_chembl_id', 'pref_name', 'molecule_structures')[:500]  # raw pool to filter down from
+
+    candidates = []
+    for mol in approved:
+        chembl_id = mol.get('molecule_chembl_id')
+        if chembl_id in exclude_chembl_ids:
+            continue
+
+        structures = mol.get('molecule_structures')
+        smiles = structures.get('canonical_smiles') if structures else None
+        if not smiles or not _passes_lipinski(smiles):
+            continue
+
+        candidates.append({
+            'chembl_id': chembl_id,
+            'name': mol.get('pref_name'),
+            'smiles': smiles,
+        })
+        if len(candidates) >= max_candidates:
+            break
+
+    return candidates
+
+
+def _passes_lipinski(smiles: str) -> bool:
+    """Standard Lipinski rule of five, allowing at most one violation."""
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return False
+    violations = sum([
+        Descriptors.MolWt(mol) > 500,
+        Descriptors.MolLogP(mol) > 5,
+        Descriptors.NumHDonors(mol) > 5,
+        Descriptors.NumHAcceptors(mol) > 10,
+    ])
+    return violations <= 1
+
 
 if __name__ == "__main__":
     target = resolve_target("EGFR")
-    ligands = get_known_ligands(target["accession"])
-    print(f"Found {len(ligands)} known ligands")
-    print(ligands[0] if ligands else "none")
+    known = get_known_ligands(target["accession"])
+    known_ids = {ligand["chembl_id"] for ligand in known}
+
+    candidates = load_candidate_library(exclude_chembl_ids=known_ids, max_candidates=20)
+    print(f"Loaded {len(candidates)} candidates (excluded {len(known_ids)} known EGFR ligands)")
+    print(candidates[0] if candidates else "none")
