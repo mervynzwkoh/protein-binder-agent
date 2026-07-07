@@ -1,15 +1,22 @@
 import requests
 import os
+from chembl_webresource_client.new_client import new_client
 
 STRUCTURE_DIR = "data/structures"
 
 def resolve_target(name_or_id: str) -> dict:
     """Resolve a gene/protein name or UniProt ID to accession + sequence."""
     url = "https://rest.uniprot.org/uniprotkb/search"
-    params = {"query": name_or_id, "fields": "accession,gene_names,sequence", "format": "json", "size": 1}
+    params = {"query": name_or_id, "fields": "accession,gene_names,sequence,organism_id", "format": "json", "size": 50}
     resp = requests.get(url, params=params, timeout=10)
     resp.raise_for_status()
-    result = resp.json()["results"][0]
+    for r in resp.json()["results"]:
+        if r["organism"]["taxonId"] == 9606:
+            result = r
+            break
+    else:
+        raise ValueError(f"No human (taxon 9606) UniProt entry found for '{name_or_id}'")
+
     return {
         "accession": result["primaryAccession"],
         "gene_name": result["genes"][0]["geneName"]["value"],
