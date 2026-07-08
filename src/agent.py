@@ -171,7 +171,6 @@ def run_agent(user_prompt: str) -> str:
             messages=messages,
         )
         messages.append({"role": "assistant", "content": response.content})
-        print(f"[agent] stop_reason={response.stop_reason}, output_tokens={response.usage.output_tokens}")
 
         if response.stop_reason != "tool_use":
             return "".join(block.text for block in response.content if block.type == "text")

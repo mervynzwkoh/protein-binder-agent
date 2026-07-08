@@ -53,7 +53,10 @@ def generate_report(state: dict, narrative: str) -> str:
 
     if candidates:
         top = candidates[0]
-        viz_path = generate_pose_visualization(structure["path"], top["pose_path"], target["gene_name"])
+        viz_path = generate_pose_visualization(
+            structure["path"], top["pose_path"], target["gene_name"],
+            top["chembl_id"], top["affinity_kcal_mol"], structure["source"],
+        )
         lines += ["", f"## Top pose visualization\n", f"See `{os.path.basename(viz_path)}` (open in a browser)."]
 
     report_path = os.path.join(REPORTS_DIR, f"{target['gene_name']}_report.md")
@@ -62,8 +65,10 @@ def generate_report(state: dict, narrative: str) -> str:
     return report_path
 
 
-def generate_pose_visualization(receptor_path: str, pose_pdbqt_path: str, label: str) -> str:
-    """Render the receptor + top docked pose as a standalone, browser-openable HTML file."""
+def generate_pose_visualization(receptor_path: str, pose_pdbqt_path: str, label: str,
+                                  chembl_id: str, affinity: float, structure_source: str) -> str:
+    """Render the receptor + top docked pose as a standalone, browser-openable HTML page,
+    with a header and summary alongside the 3D viewer - not just the bare viewer."""
     view = py3Dmol.view(width=800, height=600)
     with open(receptor_path) as f:
         view.addModel(f.read(), "pdb")
@@ -74,7 +79,50 @@ def generate_pose_visualization(receptor_path: str, pose_pdbqt_path: str, label:
     view.setStyle({"model": 1}, {"stick": {"colorscheme": "greenCarbon"}})
     view.zoomTo()
 
+    viewer_html = view._make_html()
+
+    page_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{label} Top Docked Pose</title>
+<style>
+  body {{ font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 900px;
+          margin: 40px auto; padding: 0 20px; color: #1a1a1a; }}
+  h1 {{ font-size: 1.5em; margin-bottom: 4px; }}
+  .subtitle {{ color: #666; margin-top: 0; }}
+  .stats {{ display: flex; gap: 24px; margin: 20px 0; padding: 16px; background: #f5f5f5;
+            border-radius: 8px; }}
+  .stat {{ }}
+  .stat .label {{ font-size: 0.8em; color: #666; text-transform: uppercase; }}
+  .stat .value {{ font-size: 1.3em; font-weight: 600; }}
+  .legend {{ margin-top: 12px; font-size: 0.9em; color: #444; }}
+  .legend span {{ display: inline-block; width: 12px; height: 12px; border-radius: 2px;
+                  margin-right: 6px; vertical-align: middle; }}
+</style>
+</head>
+<body>
+  <h1>{label} &mdash; Top Docked Candidate</h1>
+  <p class="subtitle">Receptor structure: {structure_source}</p>
+
+  <div class="stats">
+    <div class="stat"><div class="label">Candidate</div><div class="value">{chembl_id}</div></div>
+    <div class="stat"><div class="label">Docking Affinity</div><div class="value">{affinity:.2f} kcal/mol</div></div>
+  </div>
+
+  {viewer_html}
+
+  <p class="legend">
+    <span style="background:linear-gradient(90deg,#f00,#0f0,#00f);"></span> Receptor (cartoon, colored by chain position) &nbsp;&nbsp;
+    <span style="background:#2ecc71;"></span> Docked ligand pose (stick)
+  </p>
+  <p style="color:#888; font-size:0.85em;">
+    Docking score is a coarse triage signal, not a validated measure of binding affinity.
+  </p>
+</body>
+</html>"""
+
     html_path = os.path.join(REPORTS_DIR, f"{label}_top_pose.html")
     with open(html_path, "w", encoding="utf-8") as f:
-        f.write(view._make_html())
+        f.write(page_html)
     return html_path
