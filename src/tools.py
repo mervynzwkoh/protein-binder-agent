@@ -4,6 +4,7 @@ import random
 from chembl_webresource_client.new_client import new_client
 from rdkit import Chem
 from rdkit.Chem import Descriptors
+from rdkit.Chem.MolStandardize import rdMolStandardize
 import subprocess
 from pathlib import Path
 from rdkit import Chem
@@ -183,7 +184,7 @@ def load_candidate_library(
     exclude_chembl_ids = exclude_chembl_ids or set()
     molecule_api = new_client.molecule
     approved = list(molecule_api.filter(
-        max_phase=4,
+        max_phase=4, # approved for use somewhere
         molecule_structures__isnull=False,
     ).only('molecule_chembl_id', 'pref_name', 'molecule_structures')[:1000])
 
@@ -302,9 +303,15 @@ def _prepare_ligand(smiles: str, label: str) -> str | None:
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
+
+    # Strip counter-ions/salts - a disconnected multi-fragment ligand produces
+    # multiple ROOT sections in the PDBQT, which Vina rejects outright.
+    if len(Chem.GetMolFrags(mol)) > 1:
+        mol = rdMolStandardize.LargestFragmentChooser().choose(mol)
+
     mol = Chem.AddHs(mol)
     if AllChem.EmbedMolecule(mol, randomSeed=42) != 0:
-        return None  # RDKit couldn't generate a valid 3D conformer for this molecule
+        return None
     AllChem.MMFFOptimizeMolecule(mol)
 
     sdf_path = os.path.join(DOCKING_DIR, f"{label}.sdf")
