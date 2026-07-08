@@ -53,7 +53,12 @@ def _tool_dock_known_ligands() -> list[dict]:
     actually separates real binders from the candidate pool for this target."""
     structure = _state["structure"]
     known_ligands = _state["known_ligands"]
-    results = dock_candidates(structure["path"], known_ligands)
+    
+    # Multiple assay measurements can point at the same molecule - dock each
+    # unique compound once, not once per measurement.
+    unique_ligands = {l["chembl_id"]: l for l in known_ligands}.values()
+
+    results = dock_candidates(structure["path"], list(unique_ligands))
     _state["calibration_docking_results"] = results
     return results
 
