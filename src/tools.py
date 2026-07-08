@@ -84,7 +84,7 @@ def _predict_structure_esmfold(sequence: str, label: str) -> str:
     return path
 
 
-def get_known_ligands(uniprot_accession: str, max_results: int = 50) -> list[dict]:
+def get_known_ligands(uniprot_accession: str, max_results: int = 20) -> list[dict]:
     chembl_target_id = _find_chembl_target(uniprot_accession)
     if not chembl_target_id:
         return []
@@ -238,12 +238,12 @@ def dock_candidates(receptor_path: str, candidates: list[dict]) -> list[dict]:
             print(f"Skipping {candidate['chembl_id']}: failed to prepare ligand")
             continue
 
-        affinity = _run_vina(receptor_pdbqt, ligand_pdbqt, center, box_size)
-        if affinity is None:
+        docked = _run_vina(receptor_pdbqt, ligand_pdbqt, center, box_size)
+        if docked is None:
             print(f"Skipping {candidate['chembl_id']}: docking failed")
             continue
-
-        results.append({**candidate, "affinity_kcal_mol": affinity})
+        affinity, pose_path = docked
+        results.append({**candidate, "affinity_kcal_mol": affinity, "pose_path": pose_path})
 
     results.sort(key=lambda r: r["affinity_kcal_mol"])
     return results
@@ -343,7 +343,7 @@ def _run_vina(receptor_pdbqt: str, ligand_pdbqt: str, center: list[float], box_s
     for line in result.stdout.splitlines():
         parts = line.split()
         if parts and parts[0] == "1":  # row "1" = best-scoring pose
-            return float(parts[1])
+            return float(parts[1]), out_path
     return None
 
 

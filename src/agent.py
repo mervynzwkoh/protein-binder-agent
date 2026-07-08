@@ -1,3 +1,4 @@
+from urllib import response
 import os
 import anthropic
 from dotenv import load_dotenv
@@ -5,6 +6,7 @@ from tools import (
     resolve_target, get_structure, get_known_ligands,
     load_candidate_library, dock_candidates,
 )
+from report import generate_report
 
 load_dotenv()
 client = anthropic.Anthropic()
@@ -53,7 +55,7 @@ def _tool_dock_known_ligands() -> list[dict]:
     actually separates real binders from the candidate pool for this target."""
     structure = _state["structure"]
     known_ligands = _state["known_ligands"]
-    
+
     # Multiple assay measurements can point at the same molecule - dock each
     # unique compound once, not once per measurement.
     unique_ligands = {l["chembl_id"]: l for l in known_ligands}.values()
@@ -62,6 +64,11 @@ def _tool_dock_known_ligands() -> list[dict]:
     _state["calibration_docking_results"] = results
     return results
 
+def _tool_generate_report(narrative: str) -> str:
+    """Save the current run's findings as a Markdown report with a 3D pose visualization.
+    `narrative` should be your own interpretation/rationale in prose - it will be
+    embedded in the report verbatim."""
+    return generate_report(_state, narrative)
 
 TOOL_FUNCTIONS = {
     "resolve_target": _tool_resolve_target,
@@ -70,6 +77,7 @@ TOOL_FUNCTIONS = {
     "load_candidate_library": _tool_load_candidate_library,
     "dock_candidates": _tool_dock_candidates,
     "dock_known_ligands": _tool_dock_known_ligands,
+    "generate_report": _tool_generate_report,
 }
 
 TOOLS = [
@@ -113,6 +121,15 @@ TOOLS = [
         "description": "Dock the known-ligand calibration set against the current target's structure. Call this to check whether the docking setup separates real binders from the candidate pool - do this before presenting candidate rankings as meaningful.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "generate_report",
+        "description": "Save your findings as a persisted Markdown report with a 3D visualization of the top pose. Call this last, after dock_candidates, passing your own interpretation as the narrative argument.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"narrative": {"type": "string", "description": "Your interpretation and rationale, in prose"}},
+            "required": ["narrative"],
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are a computational drug discovery triage assistant. Given a protein \
@@ -131,7 +148,13 @@ random, treat that as a signal the docking setup may be unreliable for this targ
 say so explicitly rather than presenting the ranking uncritically. State whether the \
 structure used was experimental or ESMFold-predicted, since that materially affects \
 confidence. Always end with a ranked shortlist and a one-sentence rationale per candidate, \
-plus an explicit caveat that docking scores are a coarse triage signal, not proof of binding."""
+plus an explicit caveat that docking scores are a coarse triage signal, not proof of binding.
+
+Once you've reasoned through the calibration check and ranking, always finish by calling generate_report \
+with your full interpretation as the narrative argument - this is where your complete \
+analysis belongs. Your final chat response after that should be brief: 2-3 sentences \
+confirming what you found and pointing to the saved report, not a repeat of the full \
+analysis."""
 
 
 def run_agent(user_prompt: str) -> str:
@@ -142,12 +165,13 @@ def run_agent(user_prompt: str) -> str:
     while True:
         response = client.messages.create(
             model="claude-sonnet-5",
-            max_tokens=2000,
+            max_tokens=4096,
             system=SYSTEM_PROMPT,
             tools=TOOLS,
             messages=messages,
         )
         messages.append({"role": "assistant", "content": response.content})
+        print(f"[agent] stop_reason={response.stop_reason}, output_tokens={response.usage.output_tokens}")
 
         if response.stop_reason != "tool_use":
             return "".join(block.text for block in response.content if block.type == "text")
