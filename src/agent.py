@@ -48,6 +48,15 @@ def _tool_dock_candidates() -> list[dict]:
     _state["docking_results"] = results
     return results
 
+def _tool_dock_known_ligands() -> list[dict]:
+    """Dock the known-ligand calibration set - used to check whether Vina
+    actually separates real binders from the candidate pool for this target."""
+    structure = _state["structure"]
+    known_ligands = _state["known_ligands"]
+    results = dock_candidates(structure["path"], known_ligands)
+    _state["calibration_docking_results"] = results
+    return results
+
 
 TOOL_FUNCTIONS = {
     "resolve_target": _tool_resolve_target,
@@ -55,6 +64,7 @@ TOOL_FUNCTIONS = {
     "get_known_ligands": _tool_get_known_ligands,
     "load_candidate_library": _tool_load_candidate_library,
     "dock_candidates": _tool_dock_candidates,
+    "dock_known_ligands": _tool_dock_known_ligands,
 }
 
 TOOLS = [
@@ -93,12 +103,22 @@ TOOLS = [
         "description": "Dock the currently loaded candidates against the current target's structure using AutoDock Vina. Requires get_structure and load_candidate_library to have been called first.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "dock_known_ligands",
+        "description": "Dock the known-ligand calibration set against the current target's structure. Call this to check whether the docking setup separates real binders from the candidate pool - do this before presenting candidate rankings as meaningful.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 SYSTEM_PROMPT = """You are a computational drug discovery triage assistant. Given a protein \
 target, you autonomously: resolve it, retrieve its structure, pull known ligands as a \
 calibration reference, load a candidate pool of approved drugs (repurposing candidates, \
 already excluding known binders), and dock them.
+
+Always call dock_known_ligands before presenting the candidate ranking as meaningful - \
+compare the two score distributions directly and state whether known ligands score \
+notably better than candidates, which is the actual evidence for whether this docking \
+setup works for this target.
 
 When reasoning about results: compare candidate docking scores to the known-ligand \
 scores as a rough calibration check - if known ligands don't score notably better than \
