@@ -2,7 +2,8 @@ venv/
 __pycache__/
 *.pyc
 .env
-data/*.pdb
-data/*.pdbqt
+data/structures
+data/docking
+data/reports
 .ipynb_checkpoints/
 tools/vina_1.2.7_win.exe
