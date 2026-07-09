@@ -16,8 +16,6 @@ The agent doesn't follow a fixed script — it decides which tools to call and i
 6. **Dock candidates** — screens the repurposing candidates against the same receptor
 7. **Generate report** — a saved Markdown report plus an interactive 3D visualization of the top pose
 
-[architecture diagram — screenshot or export of the diagram from planning]
-
 ## Example output
 
 See `examples/EGFR_report.md` for a full run against EGFR, including the calibration comparison and ranked shortlist.
