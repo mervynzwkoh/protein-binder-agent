@@ -3,11 +3,11 @@ import os
 import anthropic
 import argparse
 from dotenv import load_dotenv
-from tools import (
+from .tools import (
     resolve_target, get_structure, get_known_ligands,
     load_candidate_library, dock_candidates,
 )
-from report import generate_report
+from .report import generate_report
 
 load_dotenv()
 client = anthropic.Anthropic()
