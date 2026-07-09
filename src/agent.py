@@ -1,6 +1,7 @@
 from urllib import response
 import os
 import anthropic
+import argparse
 from dotenv import load_dotenv
 from tools import (
     resolve_target, get_structure, get_known_ligands,
@@ -187,6 +188,25 @@ def run_agent(user_prompt: str) -> str:
                 tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
         messages.append({"role": "user", "content": tool_results})
 
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run the target-to-binder triage agent on a protein target."
+    )
+    parser.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="Gene name or UniProt ID (e.g. EGFR, DRD2, P00533). If omitted, you'll be prompted.",
+    )
+    args = parser.parse_args()
+
+    target = args.target or input("Enter a gene name or UniProt ID: ").strip()
+    if not target:
+        print("No target provided. Exiting.")
+        return
+
+    print(run_agent(f"Find and rank the best repurposing candidates for {target}."))
+
 
 if __name__ == "__main__":
-    print(run_agent("Find and rank the best repurposing candidates for EGFR."))
+    main()

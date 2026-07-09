@@ -32,12 +32,30 @@ pip install -r requirements.txt
 
 Download AutoDock Vina's Windows executable from the [official releases page](https://github.com/ccsb-scripps/AutoDock-Vina/releases) and place it at `tools/vina.exe`.
 
-Create a `.env` file (see `.env.example`) with your Anthropic API key.
+## Usage
 
-Run:
+Run the agent on any protein target, from the project root, as a module:
+
+```powershell
+python -m src.agent EGFR
+python -m src.agent DRD2
+python -m src.agent P00533
+```
+
+The target can be a gene name or a UniProt accession. If you omit it, you'll be prompted interactively:
+
 ```powershell
 python -m src.agent
+Enter a gene name or UniProt ID: EGFR
 ```
+
+For usage help:
+
+```powershell
+python -m src.agent --help
+```
+
+Each run saves a Markdown report and an interactive 3D HTML visualization to `data/reports/`.
 
 ## Key design decisions
 
